@@ -210,37 +210,73 @@ cp config.example.json config.json
 3. 测试 MCP Server 能否正常启动：
 
 ```bash
-python mcp_server.py
+# 测试爬取功能（不启动 MCP 服务）
+python mcp_server.py --no-mark
+
+# 测试 MCP Server 能否启动（stdio 模式，会阻塞，Ctrl+C 退出）
+python mcp_server.py mcp
 ```
 
-这条命令会直接运行爬取并打印结果（不会启动 MCP 服务）。
-要作为 MCP Server 运行，需要通过 AstrBot 来启动，见下一步。
+MCP Server 支持两种传输模式：
+
+| 模式 | 命令 | 适用场景 |
+|------|------|----------|
+| **stdio**（默认） | `python mcp_server.py mcp` | AstrBot 和爬虫在同一台机器 |
+| **streamable-http** | `python mcp_server.py mcp --transport streamable-http --port 8000` | AstrBot 和爬虫在不同机器 |
 
 ### 第四步：接入 AstrBot
 
+> 📖 **完整图文指南见 [`astrbot/future_task_guide.md`](astrbot/future_task_guide.md)**，以下是快速版。
+
+#### 方式 A：stdio 传输（同机部署，推荐）
+
 1. 确保 AstrBot 已安装并能正常运行
+
+2. 在 AstrBot 管理后台 → MCP 管理 → 添加 MCP Server：
+
+   | 字段 | 值 |
+   |------|-----|
+   | 名称 | `cqupt-notice` |
+   | 传输方式 | `stdio` |
+   | 启动命令 | `python`（或虚拟环境 python 的绝对路径） |
+   | 命令参数 | `["/你的绝对路径/mcp_server.py", "mcp"]` |
+
+   > ⚠️ 路径必须是**绝对路径**
+   > - Windows: `E:\projects\cqupt-notice-pusher\mcp_server.py`
+   > - Linux: `/home/user/cqupt-notice-pusher/mcp_server.py`
+   >
+   > 如果用了虚拟环境，启动命令写虚拟环境的 python：
+   > - Windows: `E:\projects\cqupt-notice-pusher\venv\Scripts\python.exe`
+   > - Linux: `/home/user/cqupt-notice-pusher/venv/bin/python`
+
+3. 保存并连接
+
+#### 方式 B：streamable-http 传输（跨机器部署）
+
+1. 在 MCP Server 所在机器启动：
+   ```bash
+   python mcp_server.py mcp --transport streamable-http --host 0.0.0.0 --port 8000
+   ```
 
 2. 在 AstrBot 管理后台添加 MCP Server：
 
    | 字段 | 值 |
    |------|-----|
    | 名称 | `cqupt-notice` |
-   | 传输方式 | `stdio` |
-   | 命令 | `python` |
-   | 参数 | `["/你的路径/cqupt-notice-pusher/mcp_server.py", "mcp"]` |
+   | 传输方式 | `streamable-http` |
+   | URL | `http://MCP服务器IP:8000/mcp` |
 
-   > Windows 路径示例：`E:\\projects\\cqupt-notice-pusher\\mcp_server.py`
-   > Linux 路径示例：`/home/user/cqupt-notice-pusher/mcp_server.py`
+3. 保存并连接
 
-3. 保存并启用 MCP Server
+#### 验证连接成功
 
-4. 在 AstrBot 日志中确认连接成功：
-   ```
-   [INFO] MCP server cqupt-notice connected
-   [INFO] Registered tool: get_latest_notices
-   ```
+在 AstrBot 日志中看到以下内容即表示成功：
 
-> 📖 详细的 MCP 配置方法见 [`astrbot/future_task_guide.md`](astrbot/future_task_guide.md)
+```
+✅ MCP 服务器 cqupt-notice 连接成功
+已注册工具: get_latest_notices
+已注册工具: get_notice_count
+```
 
 ### 第五步：设置定时推送
 

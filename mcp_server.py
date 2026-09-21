@@ -353,6 +353,30 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # 命令行入口
 # ---------------------------------------------------------------------------
+def run_mcp_server(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000):
+    """
+    启动 MCP Server。
+
+    transport 可选值:
+      - stdio            : 标准输入输出（AstrBot 本地调用推荐）
+      - streamable-http  : HTTP 流式传输（AstrBot 远程调用推荐）
+      - sse              : Server-Sent Events
+    """
+    if mcp is None:
+        logger.error("MCP 未初始化，请先安装 mcp 包: pip install mcp")
+        sys.exit(1)
+
+    logger.info(f"启动 MCP Server (transport={transport}, host={host}, port={port})")
+
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport in ("streamable-http", "sse", "http"):
+        mcp.run(transport=transport, host=host, port=port)
+    else:
+        logger.error(f"不支持的 transport: {transport}")
+        sys.exit(1)
+
+
 def main():
     """
     直接运行本脚本可测试爬取与解析（无需 MCP 环境）：
@@ -360,13 +384,29 @@ def main():
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="CQUPT 教务处通知爬取测试")
+    parser = argparse.ArgumentParser(description="CQUPT 教务处通知爬取 / MCP Server")
+    subparsers = parser.add_subparsers(dest="command", help="子命令")
+
+    # ---- mcp 子命令：启动 MCP Server ----
+    mcp_parser = subparsers.add_parser("mcp", help="启动 MCP Server")
+    mcp_parser.add_argument("--transport", choices=["stdio", "streamable-http", "sse", "http"],
+                            default="stdio", help="传输方式（默认 stdio）")
+    mcp_parser.add_argument("--host", default="127.0.0.1", help="HTTP 监听地址（默认 127.0.0.1）")
+    mcp_parser.add_argument("--port", type=int, default=8000, help="HTTP 监听端口（默认 8000）")
+
+    # ---- 默认：爬取测试 ----
     parser.add_argument("--no-mark", action="store_true",
                         help="测试模式：不标记为已推送")
     parser.add_argument("--days", type=int, default=None,
                         help="覆盖配置中的 days_to_fetch")
+
     args = parser.parse_args()
 
+    if args.command == "mcp":
+        run_mcp_server(transport=args.transport, host=args.host, port=args.port)
+        return
+
+    # 默认行为：爬取测试
     config = load_config()
     if args.days is not None:
         config["days_to_fetch"] = args.days
@@ -388,8 +428,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 如果安装了 mcp 且通过 mcp 运行，则启动 MCP Server
-    if mcp is not None and len(sys.argv) > 1 and sys.argv[1] == "mcp":
-        mcp.run()
-    else:
-        main()
+    main()
