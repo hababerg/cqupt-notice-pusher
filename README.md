@@ -115,7 +115,7 @@ MCP（Model Context Protocol）是 AstrBot 官方推荐的外部工具扩展方�
 
 ```bash
 # 1. 克隆本项目
-git clone https://github.com/你的用户名/cqupt-notice-pusher.git
+git clone https://github.com/Habapure/cqupt-notice-pusher.git
 cd cqupt-notice-pusher
 
 # 2. 创建虚拟环境（推荐）
