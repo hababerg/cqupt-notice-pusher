@@ -1,0 +1,10 @@
+# ===== CQUPT 通知爬取 MCP Server 依赖 =====
+
+# 浏览器自动化（绕过加速乐 WAF 的核心）
+DrissionPage>=4.0.0
+
+# HTML 解析
+beautifulsoup4>=4.12.0
+
+# MCP 协议（作为 MCP Server 运行时需要）
+mcp>=1.0.0

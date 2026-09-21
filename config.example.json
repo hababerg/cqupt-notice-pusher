@@ -1,0 +1,8 @@
+{
+  "target_url": "https://jw.cqupt.edu.cn/tzgg.htm",
+  "days_to_fetch": 1,
+  "headless": true,
+  "chrome_path": null,
+  "record_file": "pushed_records.json",
+  "page_load_timeout": 30
+}
