@@ -21,7 +21,7 @@ cqupt-notice-pusher/
 │   ├── test_crawler.py        # 需要 Chrome 和网络的手动爬虫测试
 │   └── test_unit.py           # 不联网的核心逻辑测试
 ├── deploy/
-│   └── cqupt-mcp.service.example # Linux systemd 服务模板
+│   └── cqupt-mcp.service.example # Linux systemd 模板
 └── astrbot/
     ├── system_prompt.md       # AstrBot 推送提示词
     └── future_task_guide.md   # AstrBot 配置指南
@@ -61,32 +61,25 @@ Copy-Item config.example.json config.json
 cp config.example.json config.json
 ```
 
-没有 `config.json` 时，程序也会使用内置默认配置。
+没有 `config.json` 时，程序会使用内置默认配置。
 
 ### Ubuntu / Debian 额外准备
 
-Linux 无头模式仍然需要安装 Chrome 或 Chromium。以 Ubuntu/Debian 为例：
+Linux 无头模式需要安装 Chrome 或 Chromium。Ubuntu/Debian 可执行：
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip chromium-browser
-```
-
-部分 Ubuntu 版本的软件包名称是 `chromium`，如果 `chromium-browser` 不存在，可以改用：
-
-```bash
-sudo apt install -y chromium
+sudo apt install -y python3-venv python3-pip chromium
 ```
 
 确认浏览器路径：
 
 ```bash
 which chromium
-which chromium-browser
 which google-chrome
 ```
 
-如果 DrissionPage 无法自动找到浏览器，在 `config.json` 中填写实际路径，例如：
+如果无法自动找到浏览器，在 `config.json` 中填写实际路径：
 
 ```json
 {
@@ -94,7 +87,7 @@ which google-chrome
 }
 ```
 
-Linux 服务器通常没有桌面环境，因此建议保持：
+Linux 服务器建议保持无头模式：
 
 ```json
 {
@@ -102,7 +95,7 @@ Linux 服务器通常没有桌面环境，因此建议保持：
 }
 ```
 
-如果遇到 Chromium 启动失败，请确认服务器允许无头运行，并保留程序使用的 `--no-sandbox` 和 `--disable-dev-shm-usage` 参数。
+程序已默认添加适合 Linux 服务器的 Chrome 启动参数。
 
 ## 配置
 
@@ -130,38 +123,32 @@ Linux 服务器通常没有桌面环境，因此建议保持：
 
 ## 本地测试
 
-先运行不联网的核心测试：
+运行不联网的核心测试：
 
 ```bash
 python -m unittest discover -s tests -p "test_unit.py"
 ```
 
-再运行实际爬虫：
+运行实际爬虫：
 
 ```bash
-# 默认抓取当天通知，不写入推送记录
+# 抓取当天通知，不写入推送记录
 python tests/test_crawler.py
 
 # 抓取最近 3 天
 python tests/test_crawler.py --days 3
 
-# 显示网页上的所有通知
+# 显示所有通知
 python tests/test_crawler.py --all
 
-# 显示 Chrome 窗口，便于排查 WAF 或页面变化
+# 显示 Chrome 窗口，便于排查问题
 python tests/test_crawler.py --no-head
 
-# 明确将新通知写入已推送记录
+# 写入已推送记录
 python tests/test_crawler.py --mark
 ```
 
-也可以直接运行主程序：
-
-```bash
-python mcp_server.py --no-mark
-```
-
-首次使用建议先用 `--no-mark`，确认结果正常后再使用 `--mark`。
+首次测试建议不要使用 `--mark`，确认结果正常后再写入记录。
 
 ## MCP Server
 
@@ -196,7 +183,7 @@ python mcp_server.py mcp `
   --port 8000
 ```
 
-上面是 PowerShell 写法。Linux / macOS 使用反斜杠换行：
+Linux / macOS：
 
 ```bash
 python mcp_server.py mcp \
@@ -205,7 +192,7 @@ python mcp_server.py mcp \
   --port 8000
 ```
 
-如果 AstrBot 在另一台机器，不要直接把服务暴露到公网。建议通过防火墙、VPN 或反向代理限制访问来源。确实需要远程访问时，再使用 `--host 0.0.0.0`，并确保 8000 端口只允许 AstrBot 所在 IP 访问。
+跨机器部署时，不要直接把服务暴露到公网。应通过防火墙、VPN 或反向代理限制访问来源。
 
 当前提供的工具：
 
@@ -214,14 +201,14 @@ python mcp_server.py mcp \
 
 ### Linux systemd 常驻运行
 
-仓库提供了 [deploy/cqupt-mcp.service.example](deploy/cqupt-mcp.service.example) 模板。先复制并修改其中的用户名和项目路径：
+使用 [deploy/cqupt-mcp.service.example](deploy/cqupt-mcp.service.example) 模板：
 
 ```bash
 sudo cp deploy/cqupt-mcp.service.example /etc/systemd/system/cqupt-mcp.service
 sudo nano /etc/systemd/system/cqupt-mcp.service
 ```
 
-至少修改以下字段：
+修改用户名和项目路径：
 
 ```ini
 User=你的Linux用户名
@@ -242,8 +229,6 @@ sudo systemctl status cqupt-mcp
 ```bash
 journalctl -u cqupt-mcp -f
 ```
-
-如果 AstrBot 与 MCP Server 不在同一台机器，不要仅因为使用 systemd 就直接开放端口到公网。应使用防火墙或反向代理限制访问来源。
 
 ## 去重行为
 
@@ -271,75 +256,19 @@ rm pushed_records.json
 
 完整配置说明见 [astrbot/future_task_guide.md](astrbot/future_task_guide.md)。
 
-建议提示词要求模型：
-
-- 调用 `get_latest_notices`；
-- 没有通知时直接说明当天没有新通知；
-- 提取重要程度、截止日期和报名信息；
-- 保留每条通知的完整原文链接；
-- 不要编造网页中没有的信息。
-
 ## 常见问题
 
 ### 爬取失败或返回空列表
 
-按顺序检查：
-
-1. Chrome 是否已安装；
-2. `chrome_path` 是否需要手动配置；
-3. 使用 `--no-head` 观察页面是否被 WAF 拦截；
-4. 教务处页面结构是否发生变化；
-5. 服务器是否能访问目标网址。
+检查 Chrome 安装、`chrome_path` 配置和目标网址连通性；必要时使用 `--no-head` 观察页面。
 
 ### MCP 工具找不到
 
-检查：
-
-- AstrBot 使用的 Python 是否就是安装依赖的 Python；
-- `mcp_server.py` 是否使用绝对路径；
-- `mcp`、`DrissionPage` 是否安装在同一个虚拟环境；
-- AstrBot 日志中是否有启动错误。
+确认 AstrBot 使用的是安装依赖的 Python，且 MCP 配置中的 `mcp_server.py` 使用绝对路径。
 
 ### 每次都返回空列表
 
 可能是通知已经写入 `pushed_records.json`。删除记录文件后重新测试。
-
-## GitHub 推送
-
-先查看状态：
-
-```bash
-git status
-```
-
-提交本次修改：
-
-```bash
-git add mcp_server.py README.md tests/test_unit.py
-git commit -m "refactor: improve crawler reliability and documentation"
-```
-
-推送到当前分支：
-
-```bash
-git push origin main
-```
-
-如果 GitHub 仓库还没有配置远程地址：
-
-```bash
-git remote add origin https://github.com/<用户名>/<仓库名>.git
-git branch -M main
-git push -u origin main
-```
-
-推送前建议确认没有把以下文件提交进去：
-
-- `config.json`
-- `pushed_records.json`
-- `.venv/`
-- Chrome 用户数据目录
-- 任何 API Key、密码或私钥
 
 ## 许可证
 
