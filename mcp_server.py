@@ -13,16 +13,16 @@ CQUPT 教务处通知 MCP Server
 """
 
 import json
-import os
 import re
 import sys
 import logging
+import threading
 from datetime import datetime, date
 from typing import List, Dict, Optional
 from pathlib import Path
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
-from DrissionPage import ChromiumPage, ChromiumOptions
 
 # ---------------------------------------------------------------------------
 # 日志配置
@@ -53,6 +53,8 @@ DEFAULT_CONFIG = {
     "page_load_timeout": 30,       # 页面加载超时（秒）
 }
 
+_records_lock = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # 配置加载
@@ -73,12 +75,35 @@ def load_config() -> dict:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         # 用默认值补全缺失字段
+        if not isinstance(cfg, dict):
+            raise ValueError("配置文件根节点必须是 JSON 对象")
         merged = DEFAULT_CONFIG.copy()
         merged.update(cfg)
+        validate_config(merged)
         return merged
     except Exception as e:
         logger.error(f"读取 config.json 失败: {e}，使用默认配置。")
         return DEFAULT_CONFIG.copy()
+
+
+def validate_config(config: dict) -> None:
+    """校验配置，尽早发现容易导致运行异常的类型和值错误。"""
+    if not isinstance(config.get("target_url"), str) or not config["target_url"].strip():
+        raise ValueError("target_url 必须是非空字符串")
+    if not isinstance(config.get("days_to_fetch"), int) or isinstance(config["days_to_fetch"], bool):
+        raise ValueError("days_to_fetch 必须是正整数")
+    if config["days_to_fetch"] <= 0:
+        raise ValueError("days_to_fetch 必须大于 0")
+    if not isinstance(config.get("headless"), bool):
+        raise ValueError("headless 必须是布尔值")
+    if not isinstance(config.get("page_load_timeout"), (int, float)) or config["page_load_timeout"] <= 0:
+        raise ValueError("page_load_timeout 必须是正数")
+
+
+def resolve_path(path_value: str) -> Path:
+    """将相对路径固定解析到项目目录，避免受当前工作目录影响。"""
+    path = Path(path_value).expanduser()
+    return path if path.is_absolute() else BASE_DIR / path
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +111,15 @@ def load_config() -> dict:
 # ---------------------------------------------------------------------------
 def load_pushed_records(record_file: str) -> Dict[str, str]:
     """加载已推送记录，返回 {url: title} 字典。"""
-    path = Path(record_file)
+    path = resolve_path(record_file)
     if not path.exists():
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            records = json.load(f)
+            if not isinstance(records, dict):
+                raise ValueError("记录文件根节点必须是 JSON 对象")
+            return records
     except Exception as e:
         logger.error(f"读取已推送记录失败: {e}")
         return {}
@@ -99,28 +127,35 @@ def load_pushed_records(record_file: str) -> Dict[str, str]:
 
 def save_pushed_records(records: Dict[str, str], record_file: str) -> None:
     """保存已推送记录。"""
-    path = Path(record_file)
+    path = resolve_path(record_file)
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
+            f.flush()
+        temp_path.replace(path)
     except Exception as e:
         logger.error(f"保存已推送记录失败: {e}")
 
 
 def mark_as_pushed(notices: List[Dict], record_file: str) -> None:
     """将通知标记为已推送。"""
-    records = load_pushed_records(record_file)
-    for n in notices:
-        records[n["url"]] = n["title"]
-    save_pushed_records(records, record_file)
+    with _records_lock:
+        records = load_pushed_records(record_file)
+        for n in notices:
+            records[n["url"]] = n["title"]
+        save_pushed_records(records, record_file)
     logger.info(f"已将 {len(notices)} 条通知标记为已推送。")
 
 
 # ---------------------------------------------------------------------------
 # 爬取核心
 # ---------------------------------------------------------------------------
-def build_chromium_options(config: dict) -> ChromiumOptions:
+def build_chromium_options(config: dict) -> "ChromiumOptions":
     """构建 DrissionPage 的 Chromium 启动选项，隐藏自动化特征以绕过 WAF。"""
+    from DrissionPage import ChromiumOptions
+
     co = ChromiumOptions()
 
     # 关键反检测参数：移除 navigator.webdriver 标识
@@ -147,6 +182,8 @@ def build_chromium_options(config: dict) -> ChromiumOptions:
 
 def fetch_page_html(url: str, config: dict) -> Optional[str]:
     """使用 DrissionPage 访问页面并返回 HTML。"""
+    from DrissionPage import ChromiumPage
+
     page = None
     try:
         co = build_chromium_options(config)
@@ -173,7 +210,7 @@ def fetch_page_html(url: str, config: dict) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # 解析通知列表
 # ---------------------------------------------------------------------------
-def parse_notices(html: str, base_url: str = "https://jw.cqupt.edu.cn") -> List[Dict]:
+def parse_notices(html: str, base_url: str = TARGET_URL) -> List[Dict]:
     """
     解析通知公告页 HTML，返回通知列表。
 
@@ -224,15 +261,8 @@ def parse_notices(html: str, base_url: str = "https://jw.cqupt.edu.cn") -> List[
         if not title or not date_str:
             continue
 
-        # 补全相对链接
-        if href.startswith("/"):
-            full_url = base_url + href
-        elif href.startswith("http"):
-            full_url = href
-        elif href.startswith("content.jsp"):
-            full_url = base_url + "/" + href
-        else:
-            full_url = base_url + "/" + href
+        # 使用标准 URL 解析规则处理绝对、根相对和目录相对链接。
+        full_url = urljoin(base_url, href)
 
         notices.append({
             "title": title,
@@ -257,12 +287,15 @@ def parse_notices(html: str, base_url: str = "https://jw.cqupt.edu.cn") -> List[
 # ---------------------------------------------------------------------------
 def filter_by_date(notices: List[Dict], days: int = 1) -> List[Dict]:
     """只保留最近 days 天内的通知。"""
+    if days <= 0:
+        raise ValueError("days 必须大于 0")
     today = date.today()
     result = []
     for n in notices:
         try:
             d = datetime.strptime(n["date"], "%Y-%m-%d").date()
-            if (today - d).days < days:
+            age = (today - d).days
+            if 0 <= age < days:
                 result.append(n)
         except ValueError:
             continue
@@ -295,7 +328,7 @@ def get_latest_notices_impl(config: Optional[dict] = None) -> List[Dict]:
         logger.error("未能获取页面 HTML，返回空列表。")
         return []
 
-    notices = parse_notices(html)
+    notices = parse_notices(html, base_url=url)
     if not notices:
         logger.warning("未解析到任何通知，请检查页面结构是否变化。")
         return []

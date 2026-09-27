@@ -1,200 +1,69 @@
-# CQUPT 教务处通知爬取与 AI 推送系统
+# CQUPT 教务处通知推送
 
-> 基于 **DrissionPage + MCP + AstrBot** 的重庆邮电大学教务处通知自动爬取、AI 分析与 QQ 推送系统。
->
-> 每天早上 8 点，自动抓取教务处最新通知，由 AI 分析重要性并生成友好文案推送到你的 QQ。
+基于 `DrissionPage`、`MCP` 和 `AstrBot` 的重庆邮电大学教务处通知自动抓取与 QQ 推送工具。
 
----
+它会：
 
-## 📋 目录
+1. 使用 Chrome 访问教务处通知页；
+2. 解析通知标题、日期和链接；
+3. 按日期筛选，并根据记录文件去重；
+4. 通过 MCP 提供给 AstrBot；
+5. 由大模型分析后，通过 FutureTask 定时推送。
 
-- [系统架构](#系统架构)
-- [技术选型与原理](#技术选型与原理)
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-  - [第一步：安装依赖](#第一步安装依赖)
-  - [第二步：测试爬虫](#第二步测试爬虫)
-  - [第三步：配置 MCP Server](#第三步配置-mcp-server)
-  - [第四步：接入 AstrBot](#第四步接入-astrbot)
-  - [第五步：设置定时推送](#第五步设置定时推送)
-- [配置说明](#配置说明)
-- [去重机制](#去重机制)
-- [常见问题](#常见问题)
-- [项目结构](#项目结构)
-- [许可证](#许可证)
+## 项目结构
 
----
-
-## 系统架构
-
+```text
+cqupt-notice-pusher/
+├── mcp_server.py              # 爬虫、去重和 MCP Server
+├── config.example.json        # 配置模板
+├── requirements.txt           # Python 依赖
+├── tests/
+│   ├── test_crawler.py        # 需要 Chrome 和网络的手动爬虫测试
+│   └── test_unit.py           # 不联网的核心逻辑测试
+└── astrbot/
+    ├── system_prompt.md       # AstrBot 推送提示词
+    └── future_task_guide.md   # AstrBot 配置指南
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      AstrBot (QQ 机器人)                      │
-│                                                             │
-│  ┌──────────┐    调用工具     ┌──────────────────────┐      │
-│  │ FutureTask│ ──────────────▶│  MCP Client (内置)    │      │
-│  │ (定时任务) │                └──────────┬───────────┘      │
-│  └──────────┘                           │                   │
-│       ▲                                  │ HTTP/STDIO        │
-│       │ 推送                            ▼                   │
-│  ┌────┴─────┐                   ┌──────────────────┐       │
-│  │  AI Agent │ ◀── 通知数据 ──── │  MCP Server       │       │
-│  │ (大模型)  │                   │  (get_latest_notices) │  │
-│  └────┬─────┘                   └────────┬─────────┘       │
-│       │ 生成文案                          │ 爬取            │
-│       ▼                                   ▼                 │
-│  ┌─────────┐                   ┌──────────────────┐       │
-│  │ QQ 推送  │                   │ DrissionPage     │       │
-│  └─────────┘                   │ + Chrome         │       │
-│                                └────────┬─────────┘       │
-└─────────────────────────────────────────┼───────────────────┘
-                                          ▼
-                              https://jw.cqupt.edu.cn/tzgg.htm
-```
-
-### 工作流程
-
-1. **定时触发**：AstrBot 的 FutureTask 每天 08:00 唤醒 AI Agent
-2. **调用工具**：Agent 调用 MCP 工具 `get_latest_notices`
-3. **爬取解析**：MCP Server 用 DrissionPage 绕过 WAF 爬取通知，解析后去重
-4. **AI 分析**：大模型分析每条通知的重要性、比赛建议、关键信息
-5. **QQ 推送**：生成友好文案推送到 QQ
-
----
-
-## 技术选型与原理
-
-### 为什么用 DrissionPage 而不是 requests？
-
-目标页面 `jw.cqupt.edu.cn` 使用了 **加速乐 WAF**，首次访问会返回 JS 挑战页面（HTTP 412），
-要求浏览器执行 JS 计算后才能获得真实内容。
-
-| 方案 | 结果 | 原因 |
-|------|------|------|
-| `requests` / `httpx` | ❌ 失败 | 无法执行 JS，只能拿到挑战页 |
-| `cloudscraper` | ❌ 失败 | 新版加速乐防护已升级，旧绕过手段失效 |
-| `Playwright` | ❌ 失败 | 使用 CDP 协议，自动化特征明显，被 WAF 识别 |
-| **DrissionPage + Chrome** | ✅ 成功 | 通过启动参数隐藏自动化特征 |
-
-### DrissionPage 反检测原理
-
-启动 Chrome 时传入两个关键参数：
-
-```python
-co.set_argument("--disable-blink-features=AutomationControlled")  # 移除 navigator.webdriver 标识
-co.set_argument("--headless=new")                                  # 新版无头模式，更接近真实浏览器
-```
-
-这样 WAF 的 JS 检测脚本执行时，`navigator.webdriver` 返回 `undefined`（而非 `true`），
-浏览器指纹看起来像真实用户，从而通过挑战、获得有效 Cookie。
-
-### 为什么用 MCP？
-
-MCP（Model Context Protocol）是 AstrBot 官方推荐的外部工具扩展方式。
-它把"爬取通知"这个能力封装成标准化工具 `get_latest_notices`，让 AI Agent 可以像调用函数一样调用它。
-
----
 
 ## 环境要求
 
-| 依赖 | 版本要求 | 说明 |
-|------|----------|------|
-| Python | >= 3.10 | |
-| Chrome / Chromium | >= 100 | DrissionPage 会自动调用系统 Chrome |
-| AstrBot | 最新版 | QQ 机器人框架，需支持 MCP |
-| 大模型 API | 任意 | 如 河图、OpenAI、通义千问等 |
+- Python 3.10 或更高版本
+- Chrome 或 Chromium 100+
+- AstrBot（只有接入 QQ 推送时需要）
+- 可访问 `https://jw.cqupt.edu.cn/tzgg.htm` 的网络环境
 
-> 💡 Chrome 只需正常安装即可，DrissionPage 会自动查找。
-> 如果自动查找失败，可在 `config.json` 中指定 `chrome_path`。
-
----
-
-## 快速开始
-
-### 第一步：安装依赖
+## 安装
 
 ```bash
-# 1. 克隆本项目
 git clone https://github.com/Habapure/cqupt-notice-pusher.git
 cd cqupt-notice-pusher
 
-# 2. 创建虚拟环境（推荐）
-python -m venv venv
+python -m venv .venv
 
-# Windows
-venv\Scripts\activate
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 
 # Linux / macOS
-source venv/bin/activate
+source .venv/bin/activate
 
-# 3. 安装依赖
 pip install -r requirements.txt
 ```
 
-### 第二步：测试爬虫
-
-在接入 AstrBot 之前，先独立测试爬虫是否正常工作：
+复制配置模板：
 
 ```bash
-# 基本测试（爬取当天通知，不标记已推送）
-python tests/test_crawler.py
+# Windows PowerShell
+Copy-Item config.example.json config.json
 
-# 查看页面上所有通知（不按日期过滤）
-python tests/test_crawler.py --all
-
-# 有头模式（能看到浏览器操作，便于调试）
-python tests/test_crawler.py --no-head
-
-# 爬取最近 3 天的通知
-python tests/test_crawler.py --days 3
-```
-
-✅ **预期输出**：
-
-```
-============================================================
-  CQUPT 教务处通知爬虫 - 独立测试
-============================================================
-目标 URL : https://jw.cqupt.edu.cn/tzgg.htm
-无头模式 : True
-日期范围 : 最近 1 天
-============================================================
-
-[1/4] 正在爬取页面...
-✅ 爬取成功，HTML 长度: 12345
-
-[2/4] 正在解析通知列表...
-✅ 解析到 20 条通知
-
-[3/4] 日期过滤（最近 1 天）...
-✅ 过滤后剩余 3 条通知
-
-[4/4] 去重检查...
-   已推送记录: 0 条
-✅ 去重后剩余 3 条新通知
-
-============================================================
-  爬取结果
-============================================================
-
-1. [2026-09-21] 🆕 新
-   标题: 关于XXX的通知
-   链接: https://jw.cqupt.edu.cn/info/1012/69051.htm
-
-...
-```
-
-> ⚠️ 如果爬虫失败，请先参考 [常见问题](#常见问题) 排查。
-
-### 第三步：配置 MCP Server
-
-1. 复制配置文件模板：
-
-```bash
+# Linux / macOS
 cp config.example.json config.json
 ```
 
-2. 编辑 `config.json`（通常无需修改，默认即可）：
+没有 `config.json` 时，程序也会使用内置默认配置。
+
+## 配置
+
+`config.json`：
 
 ```json
 {
@@ -207,231 +76,195 @@ cp config.example.json config.json
 }
 ```
 
-3. 测试 MCP Server 能否正常启动：
+| 配置项 | 说明 |
+|---|---|
+| `target_url` | 通知公告页地址 |
+| `days_to_fetch` | 抓取最近几天，`1` 表示今天 |
+| `headless` | 是否隐藏 Chrome 窗口 |
+| `chrome_path` | Chrome 可执行文件路径，`null` 表示自动查找 |
+| `record_file` | 已处理通知记录文件；相对路径相对于项目目录 |
+| `page_load_timeout` | 页面加载超时秒数 |
+
+## 本地测试
+
+先运行不联网的核心测试：
 
 ```bash
-# 测试爬取功能（不启动 MCP 服务）
-python mcp_server.py --no-mark
+python -m unittest discover -s tests -p "test_unit.py"
+```
 
-# 测试 MCP Server 能否启动（stdio 模式，会阻塞，Ctrl+C 退出）
+再运行实际爬虫：
+
+```bash
+# 默认抓取当天通知，不写入推送记录
+python tests/test_crawler.py
+
+# 抓取最近 3 天
+python tests/test_crawler.py --days 3
+
+# 显示网页上的所有通知
+python tests/test_crawler.py --all
+
+# 显示 Chrome 窗口，便于排查 WAF 或页面变化
+python tests/test_crawler.py --no-head
+
+# 明确将新通知写入已推送记录
+python tests/test_crawler.py --mark
+```
+
+也可以直接运行主程序：
+
+```bash
+python mcp_server.py --no-mark
+```
+
+首次使用建议先用 `--no-mark`，确认结果正常后再使用 `--mark`。
+
+## MCP Server
+
+### stdio：AstrBot 同机部署
+
+```bash
 python mcp_server.py mcp
 ```
 
-MCP Server 支持两种传输模式：
+AstrBot 中添加 MCP Server 时，建议使用虚拟环境 Python 的绝对路径：
 
-| 模式 | 命令 | 适用场景 |
-|------|------|----------|
-| **stdio**（默认） | `python mcp_server.py mcp` | AstrBot 和爬虫在同一台机器 |
-| **streamable-http** | `python mcp_server.py mcp --transport streamable-http --port 8000` | AstrBot 和爬虫在不同机器 |
+| 字段 | 示例 |
+|---|---|
+| 名称 | `cqupt-notice` |
+| 传输方式 | `stdio` |
+| 启动命令 | `E:\path\to\.venv\Scripts\python.exe` |
+| 参数 | `["E:\path\to\mcp_server.py", "mcp"]` |
 
-### 第四步：接入 AstrBot
+Linux 示例：
 
-> 📖 **完整图文指南见 [`astrbot/future_task_guide.md`](astrbot/future_task_guide.md)**，以下是快速版。
-
-#### 方式 A：stdio 传输（同机部署，推荐）
-
-1. 确保 AstrBot 已安装并能正常运行
-
-2. 在 AstrBot 管理后台 → MCP 管理 → 添加 MCP Server：
-
-   | 字段 | 值 |
-   |------|-----|
-   | 名称 | `cqupt-notice` |
-   | 传输方式 | `stdio` |
-   | 启动命令 | `python`（或虚拟环境 python 的绝对路径） |
-   | 命令参数 | `["/你的绝对路径/mcp_server.py", "mcp"]` |
-
-   > ⚠️ 路径必须是**绝对路径**
-   > - Windows: `E:\projects\cqupt-notice-pusher\mcp_server.py`
-   > - Linux: `/home/user/cqupt-notice-pusher/mcp_server.py`
-   >
-   > 如果用了虚拟环境，启动命令写虚拟环境的 python：
-   > - Windows: `E:\projects\cqupt-notice-pusher\venv\Scripts\python.exe`
-   > - Linux: `/home/user/cqupt-notice-pusher/venv/bin/python`
-
-3. 保存并连接
-
-#### 方式 B：streamable-http 传输（跨机器部署）
-
-1. 在 MCP Server 所在机器启动：
-   ```bash
-   python mcp_server.py mcp --transport streamable-http --host 0.0.0.0 --port 8000
-   ```
-
-2. 在 AstrBot 管理后台添加 MCP Server：
-
-   | 字段 | 值 |
-   |------|-----|
-   | 名称 | `cqupt-notice` |
-   | 传输方式 | `streamable-http` |
-   | URL | `http://MCP服务器IP:8000/mcp` |
-
-3. 保存并连接
-
-#### 验证连接成功
-
-在 AstrBot 日志中看到以下内容即表示成功：
-
-```
-✅ MCP 服务器 cqupt-notice 连接成功
-已注册工具: get_latest_notices
-已注册工具: get_notice_count
+```text
+/home/user/cqupt-notice-pusher/.venv/bin/python
+["/home/user/cqupt-notice-pusher/mcp_server.py", "mcp"]
 ```
 
-### 第五步：设置定时推送
-
-1. 在 AstrBot 管理后台进入「主动任务」/「FutureTask」页面
-
-2. 新建任务：
-
-   | 字段 | 值 |
-   |------|-----|
-   | 任务名称 | `重邮教务处通知早报` |
-   | 执行时间 | 每天 `08:00` |
-   | 投递目标 | 你的 QQ（私聊或群聊） |
-   | 系统提示词 | 见下方 |
-
-3. 系统提示词（复制 [`astrbot/system_prompt.md`](astrbot/system_prompt.md) 的内容）：
-
-   ```
-   你是一个「重庆邮电大学教务处通知推送助手」。你的职责是每天定时获取教务处最新通知，
-   分析每条通知的重要性，并以友好、简洁的格式推送给用户。
-
-   工作流程：
-   1. 调用 MCP 工具 get_latest_notices 获取当天的最新通知列表
-   2. 对每条通知分析：重要程度（高/中/低）、比赛建议、关键信息
-   3. 按固定格式生成推送文案
-
-   推送文案格式：
-   🌅 早安！今天是 X 月 X 日，以下是教务处最新通知：
-
-   📋 通知1：《通知标题》
-      重要程度：⭐⭐⭐
-      比赛建议：值得参加 / 不建议参加
-      截止日期：XXXX-XX-XX
-      🔗 原文链接：https://...
-
-   —— 重邮教务处通知早报
-   ```
-
-4. 保存并启用任务
-
-5. **测试**：点击「立即执行」，你的 QQ 应收到推送消息 🎉
-
----
-
-## 配置说明
-
-`config.json` 各字段说明：
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `target_url` | string | `https://jw.cqupt.edu.cn/tzgg.htm` | 通知公告页 URL |
-| `days_to_fetch` | int | `1` | 抓取最近 N 天的通知（1 = 仅当天） |
-| `headless` | bool | `true` | 是否无头模式运行 Chrome |
-| `chrome_path` | string/null | `null` | Chrome 可执行文件路径，null 为自动查找 |
-| `record_file` | string | `pushed_records.json` | 已推送记录文件路径 |
-| `page_load_timeout` | int | `30` | 页面加载超时（秒） |
-
----
-
-## 去重机制
-
-为避免重复推送同一条通知，系统维护一份已推送记录文件 `pushed_records.json`：
-
-- 每次爬取后，对比通知 URL 是否已推送过
-- 只返回**未推送过**的通知
-- `get_latest_notices` 被调用后，自动将返回的通知标记为已推送
-
-### 重置去重记录
-
-如果需要重新推送所有通知，删除 `pushed_records.json` 即可：
+### streamable-http：跨机器部署
 
 ```bash
-rm pushed_records.json   # Linux / macOS
-del pushed_records.json  # Windows
+python mcp_server.py mcp `
+  --transport streamable-http `
+  --host 127.0.0.1 `
+  --port 8000
 ```
 
----
+上面是 PowerShell 写法。Linux / macOS 使用反斜杠换行：
+
+```bash
+python mcp_server.py mcp \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+如果 AstrBot 在另一台机器，不要直接把服务暴露到公网。建议通过防火墙、VPN 或反向代理限制访问来源。确实需要远程访问时，再使用 `--host 0.0.0.0`，并确保 8000 端口只允许 AstrBot 所在 IP 访问。
+
+当前提供的工具：
+
+- `get_latest_notices`：获取日期范围内、尚未记录的通知；
+- `get_notice_count`：查看已记录通知数量。
+
+## 去重行为
+
+默认使用项目目录下的 `pushed_records.json` 保存 URL 和标题。
+
+`get_latest_notices` 在返回通知后会立即将它们写入记录。这适配 AstrBot 的定时任务模型，但意味着“工具调用成功”会被视为“已推送”。如果 AstrBot 在后续生成或发送消息时失败，通知不会自动重试。
+
+需要重新测试时删除记录文件：
+
+```bash
+# Windows PowerShell
+Remove-Item pushed_records.json
+
+# Linux / macOS
+rm pushed_records.json
+```
+
+## AstrBot 定时推送
+
+1. 在 AstrBot 中连接 MCP Server；
+2. 新建一个每天 08:00 执行的 FutureTask；
+3. 将 [astrbot/system_prompt.md](astrbot/system_prompt.md) 的内容作为系统提示词；
+4. 将任务投递到 QQ 私聊或群聊；
+5. 先手动执行一次，确认工具调用和消息格式正常。
+
+完整配置说明见 [astrbot/future_task_guide.md](astrbot/future_task_guide.md)。
+
+建议提示词要求模型：
+
+- 调用 `get_latest_notices`；
+- 没有通知时直接说明当天没有新通知；
+- 提取重要程度、截止日期和报名信息；
+- 保留每条通知的完整原文链接；
+- 不要编造网页中没有的信息。
 
 ## 常见问题
 
-### Q: 爬虫返回空列表 / 爬取失败
+### 爬取失败或返回空列表
 
-**可能原因 & 解决方案：**
+按顺序检查：
 
-1. **WAF 拦截**
-   - 将 `config.json` 中 `headless` 设为 `false`，观察浏览器是否被拦截
-   - 确认 Chrome 版本 >= 100
+1. Chrome 是否已安装；
+2. `chrome_path` 是否需要手动配置；
+3. 使用 `--no-head` 观察页面是否被 WAF 拦截；
+4. 教务处页面结构是否发生变化；
+5. 服务器是否能访问目标网址。
 
-2. **页面结构变化**
-   - 教务处改版后 HTML 结构可能变化
-   - 用 `python tests/test_crawler.py --no-head` 打开浏览器检查页面
-   - 根据实际 HTML 调整 `mcp_server.py` 中的 `parse_notices` 函数
+### MCP 工具找不到
 
-3. **网络问题**
-   - 确认服务器能正常访问 `jw.cqupt.edu.cn`
-   - `curl https://jw.cqupt.edu.cn/tzgg.htm` 测试连通性
+检查：
 
-### Q: MCP 工具在 AstrBot 中找不到
+- AstrBot 使用的 Python 是否就是安装依赖的 Python；
+- `mcp_server.py` 是否使用绝对路径；
+- `mcp`、`DrissionPage` 是否安装在同一个虚拟环境；
+- AstrBot 日志中是否有启动错误。
 
-1. 先在命令行运行 `python mcp_server.py` 确认脚本无报错
-2. 检查 AstrBot MCP 配置中的路径是否为**绝对路径**
-3. 检查 AstrBot 日志中是否有 MCP 连接错误
-4. 确认 `mcp` 包已安装：`pip show mcp`
+### 每次都返回空列表
 
-### Q: 推送内容为空
+可能是通知已经写入 `pushed_records.json`。删除记录文件后重新测试。
 
-这是正常现象。如果当天没有新通知，或所有通知都已推送过，AI 会回复
-"今天教务处没有新通知哦～"。
+## GitHub 推送
 
-可删除 `pushed_records.json` 后重新测试。
+先查看状态：
 
-### Q: DrissionPage 找不到 Chrome
-
-在 `config.json` 中手动指定 Chrome 路径：
-
-```json
-{
-  "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-}
+```bash
+git status
 ```
 
-常见 Chrome 路径：
-- Windows: `C:\Program Files\Google\Chrome\Application\chrome.exe`
-- macOS: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
-- Linux: `/usr/bin/google-chrome` 或 `/usr/bin/chromium-browser`
+提交本次修改：
 
----
-
-## 项目结构
-
-```
-cqupt-notice-pusher/
-├── README.md                    # 本文件，完整教程
-├── mcp_server.py                # MCP Server 主程序（爬虫 + 解析 + 去重 + 工具）
-├── requirements.txt             # Python 依赖
-├── config.example.json          # 配置模板（复制为 config.json 使用）
-├── .gitignore
-├── astrbot/
-│   ├── system_prompt.md         # AstrBot AI Agent 系统提示词
-│   └── future_task_guide.md     # FutureTask 详细配置指南
-└── tests/
-    └── test_crawler.py          # 独立爬虫测试脚本
+```bash
+git add mcp_server.py README.md tests/test_unit.py
+git commit -m "refactor: improve crawler reliability and documentation"
 ```
 
----
+推送到当前分支：
+
+```bash
+git push origin main
+```
+
+如果 GitHub 仓库还没有配置远程地址：
+
+```bash
+git remote add origin https://github.com/<用户名>/<仓库名>.git
+git branch -M main
+git push -u origin main
+```
+
+推送前建议确认没有把以下文件提交进去：
+
+- `config.json`
+- `pushed_records.json`
+- `.venv/`
+- Chrome 用户数据目录
+- 任何 API Key、密码或私钥
 
 ## 许可证
 
-MIT License
-
----
-
-## 致谢
-
-- [DrissionPage](https://github.com/g1879/DrissionPage) - 强大的 Python 浏览器自动化库
-- [AstrBot](https://github.com/Soulter/AstrBot) - 多平台 QQ 机器人框架
-- [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
-
-> 本项目仅供学习交流使用，请遵守学校网站的使用条款，不要对目标网站造成过大压力。
+本项目使用 MIT License。请合理控制访问频率，并遵守目标网站的使用条款。
