@@ -20,6 +20,8 @@ cqupt-notice-pusher/
 ├── tests/
 │   ├── test_crawler.py        # 需要 Chrome 和网络的手动爬虫测试
 │   └── test_unit.py           # 不联网的核心逻辑测试
+├── deploy/
+│   └── cqupt-mcp.service.example # Linux systemd 服务模板
 └── astrbot/
     ├── system_prompt.md       # AstrBot 推送提示词
     └── future_task_guide.md   # AstrBot 配置指南
@@ -60,6 +62,47 @@ cp config.example.json config.json
 ```
 
 没有 `config.json` 时，程序也会使用内置默认配置。
+
+### Ubuntu / Debian 额外准备
+
+Linux 无头模式仍然需要安装 Chrome 或 Chromium。以 Ubuntu/Debian 为例：
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip chromium-browser
+```
+
+部分 Ubuntu 版本的软件包名称是 `chromium`，如果 `chromium-browser` 不存在，可以改用：
+
+```bash
+sudo apt install -y chromium
+```
+
+确认浏览器路径：
+
+```bash
+which chromium
+which chromium-browser
+which google-chrome
+```
+
+如果 DrissionPage 无法自动找到浏览器，在 `config.json` 中填写实际路径，例如：
+
+```json
+{
+  "chrome_path": "/usr/bin/chromium"
+}
+```
+
+Linux 服务器通常没有桌面环境，因此建议保持：
+
+```json
+{
+  "headless": true
+}
+```
+
+如果遇到 Chromium 启动失败，请确认服务器允许无头运行，并保留程序使用的 `--no-sandbox` 和 `--disable-dev-shm-usage` 参数。
 
 ## 配置
 
@@ -168,6 +211,39 @@ python mcp_server.py mcp \
 
 - `get_latest_notices`：获取日期范围内、尚未记录的通知；
 - `get_notice_count`：查看已记录通知数量。
+
+### Linux systemd 常驻运行
+
+仓库提供了 [deploy/cqupt-mcp.service.example](deploy/cqupt-mcp.service.example) 模板。先复制并修改其中的用户名和项目路径：
+
+```bash
+sudo cp deploy/cqupt-mcp.service.example /etc/systemd/system/cqupt-mcp.service
+sudo nano /etc/systemd/system/cqupt-mcp.service
+```
+
+至少修改以下字段：
+
+```ini
+User=你的Linux用户名
+WorkingDirectory=/opt/cqupt-notice-pusher
+ExecStart=/opt/cqupt-notice-pusher/.venv/bin/python /opt/cqupt-notice-pusher/mcp_server.py mcp --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+然后启动服务：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now cqupt-mcp
+sudo systemctl status cqupt-mcp
+```
+
+查看实时日志：
+
+```bash
+journalctl -u cqupt-mcp -f
+```
+
+如果 AstrBot 与 MCP Server 不在同一台机器，不要仅因为使用 systemd 就直接开放端口到公网。应使用防火墙或反向代理限制访问来源。
 
 ## 去重行为
 

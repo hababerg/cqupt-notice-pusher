@@ -1,0 +1,16 @@
+[Unit]
+Description=CQUPT Notice MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USER
+WorkingDirectory=/opt/cqupt-notice-pusher
+ExecStart=/opt/cqupt-notice-pusher/.venv/bin/python /opt/cqupt-notice-pusher/mcp_server.py mcp --transport streamable-http --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

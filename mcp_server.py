@@ -175,7 +175,7 @@ def build_chromium_options(config: dict) -> "ChromiumOptions":
     # 指定 Chrome 路径（可选）
     chrome_path = config.get("chrome_path")
     if chrome_path:
-        co.set_browser_path(chrome_path)
+        co.set_browser_path(str(Path(chrome_path).expanduser()))
 
     return co
 
